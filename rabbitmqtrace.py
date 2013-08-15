@@ -12,42 +12,54 @@ usage:
 '''
 import sys
 import time
+
 from optparse import OptionParser
-import pika
 
-__AUTHOR__  = 'smallfish'
-__VERSION__ = '0.0.1'
+from kombu import Connection, Exchange, Queue
+from kombu.mixins import ConsumerMixin
+from kombu.utils import debug, log
 
-def _out(args):
-    print time.strftime('%Y-%m-%d %H:%M:%S'), args
+logger = log.get_logger(__name__)
 
-def _run(host, port, vhost, user, password):
-    conn = pika.BlockingConnection(pika.ConnectionParameters(host=host, port=port, virtual_host=vhost,
-        credentials=pika.PlainCredentials(user, password)))
-    chan = conn.channel()
-    def _on_message(ch, method, properties, body):
-        ret = {}
-        ret['routing_key'] = method.routing_key
-        ret['headers'] = properties.headers
-        ret['body'] = body
-        _out(ret)
-    _out('start subscribe amq.rabbitmq.trace')
-    ret = chan.queue_declare(exclusive=False, auto_delete=True)
-    queue = ret.method.queue
-    chan.queue_bind(exchange='amq.rabbitmq.trace', queue=queue, routing_key='#')
-    chan.queue_bind(exchange='amq.rabbitmq.log', queue=queue, routing_key='#')
-    chan.basic_consume(_on_message, queue=queue, no_ack=True)
-    chan.start_consuming()
+class FirehoseDrinker(ConsumerMixin):
+    def __init__(self, connection):
+        self.connection = connection
+
+    def get_consumers(self, Consumer, channel):
+        return [Consumer(queues=_get_queues(), callbacks=[self.process_task])]
+
+    def process_task(self, body, message):
+        print("Got message: {}".format(reprcall(body)))
+        message.ack()
+
+def _get_queues():
+    exchange = Exchange('amq.rabbitmq.trace', type='topic')
+    return [Queue('firehose', exchange, routing_key='#')]
+
+def _run(options):
+    host = options.host
+    user = options.user
+    password = options.password
+    vhost = options.vhost
+    port = options.port
+
+    with Connection(host, user, password, vhost, port) as conn:
+        try:
+            FirehoseDrinker(conn).run()
+        except KeyboardInterrupt:
+            print('Exiting')
 
 def main():
+    debug.setup_logging(loglevel=10)
     parser = OptionParser('usage: %prog')
     parser.add_option('', '--host', metavar='host', default='localhost', help='rabbitmq host address, default: %default')
     parser.add_option('', '--port', metavar='port', default=5672, type='int', help='rabbitmq port, default: %default')
     parser.add_option('', '--vhost', metavar='vhost', default='/', help='rabbitmq vhost, default: %default')
     parser.add_option('', '--user', metavar='user', default='guest', help='rabbitmq user, default: %default')
     parser.add_option('', '--password', metavar='password', default='guest', help='rabbitmq password, default: %default')
+
     (options, args) = parser.parse_args()
-    _run(options.host, options.port, options.vhost, options.user, options.password)
+    _run(options)
 
 if __name__ == '__main__':
     main()
